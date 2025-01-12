@@ -4,9 +4,176 @@ import re
 from datetime import datetime
 import numpy as np
 from django.contrib.admin import display
-
 import ast
 from bs4 import BeautifulSoup
+from flask import Flask, request, jsonify,Response
+import csv
+
+
+
+app = Flask(__name__)
+conn = pymongo.MongoClient("mongodb://localhost:27017/")
+database = conn['steam']
+@app.route('/games', methods=['GET'])
+def get_games():
+    query = request.args.to_dict()
+    projection = {"_id": 0, "name": 1, "price": 1, "genres": 1, "positive_ratings": 1}
+    results = list(database.games.find(query, projection))
+    return jsonify(results)
+
+@app.route('/reports/top_genres', methods=['GET'])
+def top_genres():
+    pipeline = [
+        {"$unwind": "$genres"},
+        {"$group": {"_id": "$genres", "average_rating": {"$avg": "$positive_ratings"}}},
+        {"$sort": {"average_rating": -1}},
+        {"$limit": 5}
+    ]
+    result = list(database.games.aggregate(pipeline))
+    return jsonify(result)
+
+
+#examplequery...////games/export?min_price=5&max_price=20
+@app.route('/games/export', methods=['GET'])
+def export_games():
+    min_price = float(request.args.get('min_price', 0))
+    max_price = float(request.args.get('max_price', 100))
+    query = {"price": {"$gte": min_price, "$lte": max_price}}
+
+    # Fetch games from MongoDB
+    games = list(database.games.find(query, {"_id": 0, "name": 1, "price": 1, "positive_ratings": 1, "tags": 1}))
+
+    # Debug: Print fetched games
+    print("Games fetched:", games)
+
+    # Return a response if no games are found
+    if not games:
+        return jsonify({"error": "No games found matching the criteria"}), 404
+
+    # CSV generation
+    def generate_csv():
+        fieldnames = ["name", "price", "positive_ratings", "tags"]
+        output = [','.join(fieldnames)]
+        for game in games:
+            row = [str(game.get(field, "")) for field in fieldnames]
+            output.append(','.join(row))
+        return '\n'.join(output)
+
+    # Return CSV as a downloadable file
+    csv_data = generate_csv()
+    return Response(csv_data, mimetype='text/csv', headers={"Content-Disposition": "attachment;filename=games.csv"})
+
+@app.route('/reports/price-trend', methods=['GET'])
+def price_trend():
+    pipeline = [
+        {
+            "$addFields": {  # Extract year from release_date
+                "release_year": {"$substr": ["$release_date", 0, 4]}
+            }
+        },
+        {"$group": {"_id": "$release_year", "average_price": {"$avg": "$price"}}},
+        {"$sort": {"_id": 1}}
+    ]
+    result = list(database.games.aggregate(pipeline))
+    return jsonify(result)
+
+@app.route('/recommendations/<game_name>', methods=['GET'])
+def recommend_games(game_name):
+    # Find the game by name
+    game = database.games.find_one({"name": {"$regex": f"^{game_name}$", "$options": "i"}}, {"_id": 0, "tags": 1, "genres": 1})
+    if not game:
+        return jsonify({"error": "Game not found"}), 404
+
+    # Find similar games based on tags and genres
+    query = {
+        "$or": [
+            {"tags": {"$in": game["tags"]}},
+            {"genres": {"$in": game["genres"]}}
+        ],
+        "name": {"$ne": game_name}  # Exclude the original game from recommendations
+    }
+    projection = {"_id": 0, "name": 1, "tags": 1, "genres": 1, "price": 1, "positive_ratings": 1}
+    recommendations = list(database.games.find(query, projection).limit(10))
+
+    return jsonify({"recommendations": recommendations})
+
+
+@app.route('/requirements/<game_name>/<system>', methods=['GET'])
+def get_system_requirements(game_name, system):
+    # Validate the system parameter
+    valid_systems = ['windows', 'mac', 'linux']
+    if system.lower() not in valid_systems:
+        return jsonify({"error": f"Invalid system '{system}'. Valid options are {valid_systems}"}), 400
+
+    # Query the database for the game
+    query = {"name": {"$regex": f"^{game_name}$", "$options": "i"}}
+    projection = {"_id": 0, f"{system.lower()}_requirements": 1, "name": 1}
+    game = database.games.find_one(query, projection)
+
+    # Handle case where the game is not found
+    if not game:
+        return jsonify({"error": f"Game '{game_name}' not found"}), 404
+
+    # Handle case where system requirements are not available
+    requirements = game.get(f"{system.lower()}_requirements", "No Data Available")
+    if requirements == "No Data Available":
+        return jsonify({"message": f"System requirements for '{system}' are not available for '{game_name}'"}), 404
+
+    # Return the system requirements
+    return jsonify({
+        "game": game_name,
+        "system": system,
+        "requirements": requirements
+    })
+
+@app.route('/games/<game_id>', methods=['PUT'])
+def edit_game(game_id):
+    data = request.get_json()
+
+    # Validate if the game exists
+    game = database.games.find_one({"_id": int(game_id)})
+    if not game:
+        return jsonify({"error": f"Game with ID {game_id} not found"}), 404
+
+    # Update the game
+    try:
+        database.games.update_one({"_id": int(game_id)}, {"$set": data})
+        return jsonify({"message": "Game updated successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to update game: {str(e)}"}), 500
+
+@app.route('/games/<game_id>', methods=['DELETE'])
+def delete_game(game_id):
+    # Validate if the game exists
+    game = database.games.find_one({"_id": int(game_id)})
+    if not game:
+        return jsonify({"error": f"Game with ID {game_id} not found"}), 404
+
+    # Delete the game
+    try:
+        database.games.delete_one({"_id": int(game_id)})
+        return jsonify({"message": f"Game with ID {game_id} deleted successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete game: {str(e)}"}), 500
+
+@app.route('/games', methods=['POST'])
+def add_game():
+    data = request.get_json()
+
+    # Check if the required fields are provided
+    required_fields = ["name", "release_date", "developer", "platforms", "categories", "genres", "tags", "positive_ratings", "negative_ratings", "price", "detailed_description"]
+    missing_fields = [field for field in required_fields if field not in data]
+
+    if missing_fields:
+        return jsonify({"error": f"Missing fields: {missing_fields}"}), 400
+
+    # Insert the game into the database
+    try:
+        database.games.insert_one(data)
+        return jsonify({"message": "Game added successfully"}), 201
+    except Exception as e:
+        return jsonify({"error": f"Failed to add game: {str(e)}"}), 500
+
 
 def clean_from_tags(cleaned_string):
 
@@ -62,8 +229,7 @@ def create_steam_db():
         print(source)
         sources[source] = df
 
-    conn = pymongo.MongoClient("mongodb://localhost:27017/")
-    database = conn['steam']
+
 
     games_validator = \
         {
@@ -182,34 +348,17 @@ def create_steam_db():
     mac_requirements = {}
     linux_requirements = {}
     minimum = {}
-    for index, record in s.iterrows():
-        if record['steam_appid'] not in pc_requirements.keys():
-            pc= str(record['pc_requirements']).lower()
-            soup = BeautifulSoup(pc, 'html.parser')
-            cleaned_string = soup.get_text()
-            cleaned_string = clean_from_tags(cleaned_string)
-            pc_requirements[record['steam_appid']]=cleaned_string
-
-        if record['steam_appid'] not in mac_requirements.keys():
-            mac= str(record['mac_requirements']).lower()
-            soup = BeautifulSoup(mac, 'html.parser')
-            cleaned_string = soup.get_text()
-            cleaned_string = clean_from_tags(cleaned_string)
-            mac_requirements[record['steam_appid']]=cleaned_string
-
-        if record['steam_appid'] not in linux_requirements.keys():
-            linux=str(record['linux_requirements']).lower()
-            soup = BeautifulSoup(linux, 'html.parser')
-            cleaned_string = soup.get_text()
-            cleaned_string = clean_from_tags(cleaned_string)
-            linux_requirements[record['steam_appid']]=cleaned_string
-
-        if record['steam_appid'] not in minimum.keys():
-            mini=str(record['minimum']).lower()
-            soup = BeautifulSoup(mini, 'html.parser')
-            cleaned_string = soup.get_text()
-            cleaned_string = clean_from_tags(cleaned_string)
-            minimum[record['steam_appid']]=cleaned_string
+    for _, record in s.iterrows():
+        appid = record['steam_appid']
+        pc_requirements[appid] = clean_from_tags(
+            BeautifulSoup(str(record.get('pc_requirements', "No Data Available")).lower(), 'html.parser').get_text()
+        )
+        mac_requirements[appid] = clean_from_tags(
+            BeautifulSoup(str(record.get('mac_requirements', "No Data Available")).lower(), 'html.parser').get_text()
+        )
+        linux_requirements[appid] = clean_from_tags(
+            BeautifulSoup(str(record.get('linux_requirements', "No Data Available")).lower(), 'html.parser').get_text()
+        )
 
     s = sources['steam.csv']
 
@@ -238,21 +387,15 @@ def create_steam_db():
         game['detailed_description'] = str(detailed_descriptions[record['appid']])
         if record['appid'] in minimum.keys():
             game['minimum'] = str(minimum[record['appid']])
-        if record['appid'] in pc_requirements.keys() or record['appid'] in mac_requirements.keys() or record[
-            'appid'] in linux_requirements.keys():
-            if 'linux' in game['platforms'] and str(linux_requirements[record['appid']])!="[]":
-                game['linux_requirements'] = str(linux_requirements[record['appid']])
-            else:
-                game['linux_requirements'] = "No Data Available"
-            if 'windows' in game['platforms'] and str(pc_requirements[record['appid']])!="[]":
-                game['windows_requirements'] = str(pc_requirements[record['appid']])
-            else:
-                game['windows_requirements'] = "No Data Available"
-            if 'mac' in game['platforms'] and str(mac_requirements[record['appid']])!="[]":
-                game['mac_requirements'] = str(mac_requirements[record['appid']])
-            else:
-                game['mac_requirements'] = "No Data Available"
-
+        game['linux_requirements']= linux_requirements.get(record['appid'], "No Data Available")
+        if game['linux_requirements']=="[]":
+            game['linux_requirements'] = 'No Data Available'
+        game['windows_requirements']= pc_requirements.get(record['appid'], "No Data Available")
+        if game['windows_requirements']=="[]":
+            game['windows_requirements'] = 'No Data Available'
+        game['mac_requirements']= mac_requirements.get(record['appid'], "No Data Available")
+        if game['mac_requirements']=="[]":
+            game['mac_requirements'] = 'No Data Available'
 
         game = clean_game_document(game)
         col_games.insert_one(game)
@@ -267,21 +410,8 @@ def main():
     except Exception as e:
         print(f"Database already exists or caught error:{e}")
 
-    conn = pymongo.MongoClient("mongodb://localhost:27017/")
-    database = conn['steam']
-    col_games=database["games"]
-    query={
-        #"positive_ratings": {"gte":124532, "$lte":124536},
-        "price":{"$gte":5.0,"$lte":10.0},
-    }
-    projection={
-        "_id":0,
-        "name":1,
-        "windows_requirements":1
-    }
-    result=list(col_games.find(query,projection))
-    for r in result:
-        print(r,'\n')
+
 
 if __name__ == '__main__':
     main()
+    app.run(debug=True)
