@@ -145,17 +145,33 @@ def delete_game(game_id):
 def add_game():
     data = request.get_json()
 
-    required_fields = ["name", "release_date", "developer", "platforms", "categories", "genres", "tags", "positive_ratings", "negative_ratings", "price", "detailed_description"]
+    required_fields = [
+        "name", "release_date", "developer", "platforms", "categories",
+        "genres", "tags", "positive_ratings", "negative_ratings", "price",
+        "detailed_description", "header_img", "website", "support_url", "background_img",
+        "linux_requirements", "mac_requirements", "windows_requirements"
+    ]
     missing_fields = [field for field in required_fields if field not in data]
 
     if missing_fields:
         return jsonify({"error": f"Missing fields: {missing_fields}"}), 400
+
+    url_fields = ["header_img", "website", "support_url", "background_img"]
+    for field in url_fields:
+        if data.get(field) and not re.match(r'https?://', data[field]):
+            return jsonify({"error": f"Invalid URL for field '{field}': {data[field]}"}), 400
+
+    requirements_fields = ["linux_requirements", "mac_requirements", "windows_requirements"]
+    for field in requirements_fields:
+        if not isinstance(data.get(field, ""), str):
+            return jsonify({"error": f"Field '{field}' must be a string."}), 400
 
     try:
         database.games.insert_one(data)
         return jsonify({"message": "Game added successfully"}), 201
     except Exception as e:
         return jsonify({"error": f"Failed to add game: {str(e)}"}), 500
+
 
 
 @app.route('/reports/top_genres_by_year', methods=['GET'])
@@ -197,6 +213,8 @@ def developer_genre_ratings():
     return jsonify(result)
 
 
+
+#needs developer and discount_price
 @app.route('/games/bulk_update_price', methods=['PUT'])
 def bulk_update_price():
     data = request.form or request.json
