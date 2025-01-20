@@ -36,17 +36,14 @@ def top_genres():
 #examplequery...////games/export?min_price=5&max_price=20
 @app.route('/games/export', methods=['GET'])
 def export_games():
-    min_price = float(request.args.get('min_price', 0))
-    max_price = float(request.args.get('max_price', 100))
+    min_price = float(request.args.get('min_price', 5))
+    max_price = float(request.args.get('max_price', 10))
     query = {"price": {"$gte": min_price, "$lte": max_price}}
 
-    # Fetch games from MongoDB
     games = list(database.games.find(query, {"_id": 0, "name": 1, "price": 1, "positive_ratings": 1, "tags": 1}))
 
-    # Debug: Print fetched games
     print("Games fetched:", games)
 
-    # Return a response if no games are found
     if not games:
         return jsonify({"error": "No games found matching the criteria"}), 404
 
@@ -59,7 +56,6 @@ def export_games():
             output.append(','.join(row))
         return '\n'.join(output)
 
-    # Return CSV as a downloadable file
     csv_data = generate_csv()
     return Response(csv_data, mimetype='text/csv', headers={"Content-Disposition": "attachment;filename=games.csv"})
 
@@ -79,18 +75,16 @@ def price_trend():
 
 @app.route('/recommendations/<game_name>', methods=['GET'])
 def recommend_games(game_name):
-    # Find the game by name
     game = database.games.find_one({"name": {"$regex": f"^{game_name}$", "$options": "i"}}, {"_id": 0, "tags": 1, "genres": 1})
     if not game:
         return jsonify({"error": "Game not found"}), 404
 
-    # Find similar games based on tags and genres
     query = {
         "$or": [
             {"tags": {"$in": game["tags"]}},
             {"genres": {"$in": game["genres"]}}
         ],
-        "name": {"$ne": game_name}  # Exclude the original game from recommendations
+        "name": {"$ne": game_name}
     }
     projection = {"_id": 0, "name": 1, "tags": 1, "genres": 1, "price": 1, "positive_ratings": 1}
     recommendations = list(database.games.find(query, projection).limit(10))
@@ -100,26 +94,21 @@ def recommend_games(game_name):
 
 @app.route('/requirements/<game_name>/<system>', methods=['GET'])
 def get_system_requirements(game_name, system):
-    # Validate the system parameter
     valid_systems = ['windows', 'mac', 'linux']
     if system.lower() not in valid_systems:
         return jsonify({"error": f"Invalid system '{system}'. Valid options are {valid_systems}"}), 400
 
-    # Query the database for the game
     query = {"name": {"$regex": f"^{game_name}$", "$options": "i"}}
     projection = {"_id": 0, f"{system.lower()}_requirements": 1, "name": 1}
     game = database.games.find_one(query, projection)
 
-    # Handle case where the game is not found
     if not game:
         return jsonify({"error": f"Game '{game_name}' not found"}), 404
 
-    # Handle case where system requirements are not available
     requirements = game.get(f"{system.lower()}_requirements", "No Data Available")
     if requirements == "No Data Available":
         return jsonify({"message": f"System requirements for '{system}' are not available for '{game_name}'"}), 404
 
-    # Return the system requirements
     return jsonify({
         "game": game_name,
         "system": system,
@@ -130,12 +119,10 @@ def get_system_requirements(game_name, system):
 def edit_game(game_id):
     data = request.get_json()
 
-    # Validate if the game exists
     game = database.games.find_one({"_id": int(game_id)})
     if not game:
         return jsonify({"error": f"Game with ID {game_id} not found"}), 404
 
-    # Update the game
     try:
         database.games.update_one({"_id": int(game_id)}, {"$set": data})
         return jsonify({"message": "Game updated successfully"}), 200
@@ -144,12 +131,10 @@ def edit_game(game_id):
 
 @app.route('/games/<game_id>', methods=['DELETE'])
 def delete_game(game_id):
-    # Validate if the game exists
     game = database.games.find_one({"_id": int(game_id)})
     if not game:
         return jsonify({"error": f"Game with ID {game_id} not found"}), 404
 
-    # Delete the game
     try:
         database.games.delete_one({"_id": int(game_id)})
         return jsonify({"message": f"Game with ID {game_id} deleted successfully"}), 200
@@ -160,19 +145,112 @@ def delete_game(game_id):
 def add_game():
     data = request.get_json()
 
-    # Check if the required fields are provided
     required_fields = ["name", "release_date", "developer", "platforms", "categories", "genres", "tags", "positive_ratings", "negative_ratings", "price", "detailed_description"]
     missing_fields = [field for field in required_fields if field not in data]
 
     if missing_fields:
         return jsonify({"error": f"Missing fields: {missing_fields}"}), 400
 
-    # Insert the game into the database
     try:
         database.games.insert_one(data)
         return jsonify({"message": "Game added successfully"}), 201
     except Exception as e:
         return jsonify({"error": f"Failed to add game: {str(e)}"}), 500
+
+
+@app.route('/reports/top_genres_by_year', methods=['GET'])
+def top_genres_by_year():
+    pipeline = [
+        {"$unwind": "$genres"},
+        {
+            "$addFields": {
+                "release_year": {"$substr": ["$release_date", 0, 4]}
+            }
+        },
+        {
+            "$group": {
+                "_id": {"year": "$release_year", "genre": "$genres"},
+                "average_rating": {"$avg": "$positive_ratings"}
+            }
+        },
+        {"$sort": {"average_rating": -1}},
+        {"$limit": 10}
+    ]
+    result = list(database.games.aggregate(pipeline))
+    return jsonify(result)
+
+
+
+@app.route('/reports/developer_genre_ratings', methods=['GET'])
+def developer_genre_ratings():
+    pipeline = [
+        {
+            "$group": {
+                "_id": {"developer": "$developer", "genre": "$genres"},
+                "average_rating": {"$avg": "$positive_ratings"}
+            }
+        },
+        {"$sort": {"_id.developer": 1, "_id.genre": 1}},
+        {"$limit": 50}
+    ]
+    result = list(database.games.aggregate(pipeline))
+    return jsonify(result)
+
+
+@app.route('/games/bulk_update_price', methods=['PUT'])
+def bulk_update_price():
+    data = request.form or request.json
+    developer = data.get('developer')
+    discount_percentage = float(data.get('discount_percentage', 10)) / 100
+
+    if not developer:
+        return jsonify({"error": "Missing 'developer' parameter"}), 400
+
+    print(f"Developer received: {developer}")
+
+    games = list(
+        database.games.find({"developer": {"$regex": f"^{developer}$", "$options": "i"}}, {"_id": 1, "price": 1}))
+    print(f"Developer: {developer}, Games found: {len(games)}")
+
+    if not games:
+        return jsonify({"error": f"No games found for developer '{developer}'"}), 404
+
+    for game in games:
+        new_price = max(game['price'] * (1 - discount_percentage), 0.99)
+        database.games.update_one({"_id": game["_id"]}, {"$set": {"price": new_price}})
+
+    return jsonify({"message": f"Prices updated for {len(games)} games"}), 200
+
+import webbrowser
+
+@app.route('/games/<game_id>/header_img', methods=['GET'])
+def open_header_img(game_id):
+    game = database.games.find_one({"_id": int(game_id)}, {"_id": 0, "header_img": 1, "name": 1})
+    if not game:
+        return jsonify({"error": f"Game with ID {game_id} not found"}), 404
+
+    header_img = game.get("header_img", "No Data Available")
+    if header_img == "No Data Available":
+        return jsonify({"error": f"Header image for game '{game_id}' is not available"}), 404
+
+    webbrowser.open(header_img)
+    return jsonify({"message": f"Opened header image for game '{game_id}' in the browser", "header_img": header_img}), 200
+
+
+@app.route('/games/<game_id>/website', methods=['GET'])
+def open_website(game_id):
+    game = database.games.find_one({"_id": int(game_id)}, {"_id": 0, "website": 1, "name": 1})
+    if not game:
+        return jsonify({"error": f"Game with ID {game_id} not found"}), 404
+
+    website = game.get("website", "No Data Available")
+    if website == "No Data Available":
+        return jsonify({"error": f"Website for game '{game_id}' is not available"}), 404
+
+    webbrowser.open(website)
+    return jsonify({"message": f"Opened website for game '{game_id}' in the browser", "website": website}), 200
+
+
 
 
 def clean_from_tags(cleaned_string):
@@ -246,6 +324,10 @@ def create_steam_db():
                     "positive_ratings",
                     "negative_ratings",
                     "price",
+                    "website",
+                    "support_url",
+                    "header_img",
+                    "background_img",
                     "detailed_description",
                     "linux_requirements",
                     "windows_requirements",
@@ -307,6 +389,22 @@ def create_steam_db():
                         "minimum": 0,
                         "description": "The price of the game."
                     },
+                    "website": {
+                        "bsonType": "string",
+                        "description": "Url of the website about the game"
+                    },
+                    "support_url": {
+                        "bsonType": "string",
+                        "description": "Url to the steam support page"
+                    },
+                    "header_img": {
+                        "bsonType": "string",
+                        "description": "Url to the header image of the game."
+                    },
+                    "background_img": {
+                        "bsonType": "string",
+                        "description": "Url to the background image of the game."
+                    },
                     "detailed_description": {
                         "bsonType": "string",
                         "description": "Detailed description of the game."
@@ -334,7 +432,7 @@ def create_steam_db():
     detailed_descriptions = {}
 
 
-    for index, record in s.iterrows():
+    for _, record in s.iterrows():
         if record['steam_appid'] not in detailed_descriptions.keys():
             des = str(record['detailed_description'])
             soup = BeautifulSoup(des, 'html.parser')
@@ -360,6 +458,26 @@ def create_steam_db():
             BeautifulSoup(str(record.get('linux_requirements', "No Data Available")).lower(), 'html.parser').get_text()
         )
 
+    s=sources['steam_support_info.csv']
+    website={}
+    support_url={}
+    for _, record in s.iterrows():
+        appid = record['steam_appid']
+        website[appid] = record['website']
+        support_url[appid] = record['support_url']
+
+    s=sources['steam_media_data.csv']
+    header_img={}
+    background_img={}
+    for _,record in s.iterrows():
+        appid = record['steam_appid']
+        header_img[appid] = record['header_image']
+        background_img[appid] = record['background']
+
+
+
+
+
     s = sources['steam.csv']
 
     game = {}
@@ -376,6 +494,7 @@ def create_steam_db():
         game['positive_ratings'] = record['positive_ratings']
         game['negative_ratings'] = record['negative_ratings']
         game['price'] = record['price']
+
         for i in record['platforms'].split(';'):
             game['platforms'].append(i)
         for c in record['categories'].split(';'):
@@ -384,6 +503,28 @@ def create_steam_db():
             game['genres'].append(g)
         for t in record['steamspy_tags'].split(';'):
             game['tags'].append(t)
+
+        if record['appid'] in website.keys():
+            game['website'] = str(website[record['appid']])
+        else:
+            game['website'] = 'No Data Available'
+        if game['website']=="nan":
+            game['website'] = "No Data Available"
+        if record['appid'] in support_url.keys():
+            game['support_url'] = str(support_url[record['appid']])
+        else:
+            game['support_url'] = 'No Data Available'
+        if game['support_url']=="nan":
+            game['support_url'] = "No Data Available"
+
+        if record['appid'] in header_img.keys():
+            game['header_img'] = str(header_img[record['appid']])
+        else:
+            game['header_img'] = "No Data Available"
+        if record['appid'] in background_img.keys():
+            game['background_img'] = str(background_img[record['appid']])
+        else:
+            game['background_img'] = "No Data Available"
         game['detailed_description'] = str(detailed_descriptions[record['appid']])
         if record['appid'] in minimum.keys():
             game['minimum'] = str(minimum[record['appid']])
