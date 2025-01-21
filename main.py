@@ -63,7 +63,7 @@ def export_games():
 def price_trend():
     pipeline = [
         {
-            "$addFields": {  # Extract year from release_date
+            "$addFields": {
                 "release_year": {"$substr": ["$release_date", 0, 4]}
             }
         },
