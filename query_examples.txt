@@ -1,0 +1,34 @@
+EXAMPLE ADD GAMES
+http://localhost:5000/games
+{
+    "name": "Sample Game",
+    "release_date": "2023-01-01",
+    "_id": 5000,
+    "developer": "Sample Developer",
+    "platforms": ["Windows", "Linux"],
+    "categories": ["Action", "Multiplayer"],
+    "genres": ["Shooter"],
+    "tags": ["FPS", "Multiplayer"],
+    "positive_ratings": 5000,
+    "negative_ratings": 200,
+    "price": 29.99,
+    "detailed_description": "This is a sample game description.",
+    "header_img": "https://example.com/header_image.jpg",
+    "website": "https://example.com",
+    "support_url": "https://example.com/support",
+    "background_img": "https://example.com/background_image.jpg",
+    "linux_requirements": "Minimum: Ubuntu 20.04, 4GB RAM, 2GHz CPU",
+    "mac_requirements": "Minimum: macOS 11, 4GB RAM, 2GHz CPU",
+    "windows_requirements": "Minimum: Windows 10, 4GB RAM, 2GHz CPU"
+}
+
+
+EXAMPLE DELETE GAME WITH ID 5000:
+http://localhost:5000/games/5000
+
+EXAMPLE EDIT NAME OF THE GAME WITH ID 5000:
+http://localhost:5000/games/5000
+
+{
+    "name": "Example"
+}

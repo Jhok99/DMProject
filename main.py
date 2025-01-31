@@ -14,6 +14,8 @@ import csv
 app = Flask(__name__)
 conn = pymongo.MongoClient("mongodb://localhost:27017/")
 database = conn['steam']
+
+#http://127.0.0.1:5000/games
 @app.route('/games', methods=['GET'])
 def get_games():
     query = request.args.to_dict()
@@ -21,6 +23,7 @@ def get_games():
     results = list(database.games.find(query, projection))
     return jsonify(results)
 
+#http://127.0.0.1:5000/reports/top_genres
 @app.route('/reports/top_genres', methods=['GET'])
 def top_genres():
     pipeline = [
@@ -33,7 +36,7 @@ def top_genres():
     return jsonify(result)
 
 
-#examplequery...////games/export?min_price=5&max_price=20
+#http://127.0.0.1:5000/games/export?min_price=5&max_price=20
 @app.route('/games/export', methods=['GET'])
 def export_games():
     min_price = float(request.args.get('min_price', 5))
@@ -59,6 +62,7 @@ def export_games():
     csv_data = generate_csv()
     return Response(csv_data, mimetype='text/csv', headers={"Content-Disposition": "attachment;filename=games.csv"})
 
+#http://127.0.0.1:5000/reports/price-trend
 @app.route('/reports/price-trend', methods=['GET'])
 def price_trend():
     pipeline = [
@@ -73,9 +77,14 @@ def price_trend():
     result = list(database.games.aggregate(pipeline))
     return jsonify(result)
 
+#http://127.0.0.1:5000/recommendations/Dota 2
 @app.route('/recommendations/<game_name>', methods=['GET'])
 def recommend_games(game_name):
-    game = database.games.find_one({"name": {"$regex": f"^{game_name}$", "$options": "i"}}, {"_id": 0, "tags": 1, "genres": 1})
+    game = database.games.find_one(
+        {"name": {"$regex": f"^{game_name}$", "$options": "i"}},
+        {"_id": 0, "tags": 1, "genres": 1}
+    )
+
     if not game:
         return jsonify({"error": "Game not found"}), 404
 
@@ -86,12 +95,19 @@ def recommend_games(game_name):
         ],
         "name": {"$ne": game_name}
     }
+
     projection = {"_id": 0, "name": 1, "tags": 1, "genres": 1, "price": 1, "positive_ratings": 1}
-    recommendations = list(database.games.find(query, projection).limit(10))
 
-    return jsonify({"recommendations": recommendations})
+    recommendations = list(database.games.aggregate([
+        {"$match": query},
+        {"$sample": {"size": 10}},
+        {"$project": projection}
+    ]))
+
+    return jsonify({"recommended_games": recommendations})
 
 
+#http://127.0.0.1:5000/requirements/Counter-strike/windows
 @app.route('/requirements/<game_name>/<system>', methods=['GET'])
 def get_system_requirements(game_name, system):
     valid_systems = ['windows', 'mac', 'linux']
@@ -173,7 +189,7 @@ def add_game():
         return jsonify({"error": f"Failed to add game: {str(e)}"}), 500
 
 
-
+#http://127.0.0.1:5000/reports/top_genres_by_year
 @app.route('/reports/top_genres_by_year', methods=['GET'])
 def top_genres_by_year():
     pipeline = [
@@ -196,7 +212,7 @@ def top_genres_by_year():
     return jsonify(result)
 
 
-
+#http://127.0.0.1:5000/reports/developer_genre_ratings
 @app.route('/reports/developer_genre_ratings', methods=['GET'])
 def developer_genre_ratings():
     pipeline = [
@@ -213,8 +229,6 @@ def developer_genre_ratings():
     return jsonify(result)
 
 
-
-#needs developer and discount_price
 @app.route('/games/bulk_update_price', methods=['PUT'])
 def bulk_update_price():
     data = request.form or request.json
@@ -241,6 +255,7 @@ def bulk_update_price():
 
 import webbrowser
 
+#http://127.0.0.1:5000/games/10/header_img
 @app.route('/games/<game_id>/header_img', methods=['GET'])
 def open_header_img(game_id):
     game = database.games.find_one({"_id": int(game_id)}, {"_id": 0, "header_img": 1, "name": 1})
@@ -254,7 +269,7 @@ def open_header_img(game_id):
     webbrowser.open(header_img)
     return jsonify({"message": f"Opened header image for game '{game_id}' in the browser", "header_img": header_img}), 200
 
-
+#http://127.0.0.1:5000/games/30/website
 @app.route('/games/<game_id>/website', methods=['GET'])
 def open_website(game_id):
     game = database.games.find_one({"_id": int(game_id)}, {"_id": 0, "website": 1, "name": 1})
