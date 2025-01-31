@@ -32,3 +32,11 @@ http://localhost:5000/games/5000
 {
     "name": "Example"
 }
+
+
+EXAMPLE BULK UPDATE OF VALVE GAMES WITH 20 PERCENTAGE DISCOUNT:
+http://localhost:5000/games/bulk_update_price
+{
+    "developer": "Valve",
+    "discount_price": 20
+}
